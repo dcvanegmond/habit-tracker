@@ -16,6 +16,19 @@ with Claude Code.
 
 If Claude asked questions (`needs-info`), answer them in a comment and add `refine` again.
 
+## Releasing to production
+
+Staging updates on every merge. Production only changes when you publish a release:
+
+1. Go to **Releases → Draft a new release** (or run `gh release create v0.2.0 --generate-notes`).
+2. Create a new tag such as `v0.2.0` on `main`, click **Generate release notes** and publish.
+3. **Deploy to production** runs and puts exactly that tagged commit on
+   https://habit-tracker.dcvanegmond.nl (container `habit-tracker`, next to staging on the same VPS).
+
+**Rollback:** Actions → **Deploy to production** → **Run workflow**, and enter an older tag.
+
+Both deploys use the same steps in `.github/workflows/deploy.yml`.
+
 ## One-time setup
 
 ### 1. Staging on the VPS
