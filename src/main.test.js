@@ -75,6 +75,21 @@ describe('mountApp', () => {
       expect([...root.querySelectorAll('.habit .name')].map((n) => n.textContent)).toEqual(['Two']);
     });
 
+    it('keeps the completions and streak of the remaining habits', () => {
+      addHabit('One');
+      addHabit('Two');
+      const twoCheckbox = root.querySelectorAll('.habit input[type="checkbox"]')[1];
+      twoCheckbox.checked = true;
+      twoCheckbox.dispatchEvent(new Event('change'));
+      vi.spyOn(window, 'confirm').mockReturnValue(true);
+      root.querySelector('.habit button.delete').click();
+      const remaining = root.querySelectorAll('.habit');
+      expect(remaining).toHaveLength(1);
+      expect(remaining[0].querySelector('.name').textContent).toBe('Two');
+      expect(remaining[0].querySelector('input[type="checkbox"]').checked).toBe(true);
+      expect(remaining[0].querySelector('.streak').textContent).toBe('1 day');
+    });
+
     it('does nothing when cancelled', () => {
       addHabit('One');
       const before = storage.getItem(key);
