@@ -7,14 +7,14 @@ on:
   issues:
     types: [labeled]
 
-concurrency:
-  group: claude-issue-${{ github.event.issue.number }}
-  cancel-in-progress: false
-
 jobs:
   refine:
+    # Only queue runs that actually do work, so skipped runs don't show up as cancelled.
     if: github.event.label.name == 'refine'
     runs-on: ubuntu-latest
+    concurrency:
+      group: claude-issue-${{ github.event.issue.number }}
+      cancel-in-progress: false
     timeout-minutes: 15
     permissions:
       contents: read
@@ -28,7 +28,6 @@ jobs:
       - uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          show_full_output: true  # TEMP: debugging first run
           prompt: |
             REPO: ${{ github.repository }}
             ISSUE: #${{ github.event.issue.number }}
