@@ -1,0 +1,67 @@
+# Step 2: after you approve the refined ticket, add the `approved` label.
+# Claude implements it on a branch, adds tests, runs them and opens a PR.
+name: Claude – implement ticket
+
+on:
+  issues:
+    types: [labeled]
+
+concurrency:
+  group: claude-issue-${{ github.event.issue.number }}
+  cancel-in-progress: false
+
+jobs:
+  implement:
+    if: github.event.label.name == 'approved'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      id-token: write
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          prompt: |
+            REPO: ${{ github.repository }}
+            ISSUE: #${{ github.event.issue.number }}
+
+            Implement this ticket according to the Acceptance criteria and Technical plan
+            in the issue body. Follow CLAUDE.md.
+
+            1. Read it: `gh issue view ${{ github.event.issue.number }} --comments`.
+               If it has no Acceptance criteria section, comment that it needs refining first,
+               run `gh issue edit ${{ github.event.issue.number }} --remove-label approved --add-label refine`
+               and stop.
+            2. Create a branch named `claude/issue-${{ github.event.issue.number }}-<short-slug>` from main.
+            3. Implement the change. Add or update tests so every acceptance criterion is covered.
+            4. Run `npm test` and `npm run build` and fix problems until both pass.
+               Never skip, weaken or delete existing tests to make them pass.
+            5. Commit with clear messages and push the branch.
+            6. Open a pull request with `gh pr create --base main`. Use the issue title as the PR
+               title. In the body include: a short summary, how each acceptance criterion is met,
+               the test results, and the line `Closes #${{ github.event.issue.number }}`.
+            7. Run `gh issue edit ${{ github.event.issue.number }} --remove-label approved --remove-label awaiting-approval --add-label in-review`
+               and comment the PR link on the issue.
+
+            If you get stuck, comment on the issue explaining why, run
+            `gh issue edit ${{ github.event.issue.number }} --remove-label approved --add-label needs-info`
+            and stop.
+          claude_args: |
+            --max-turns 60
+            --allowedTools "Read,Write,Edit,Glob,Grep,Bash(git:*),Bash(npm:*),Bash(npx:*),Bash(gh issue:*),Bash(gh pr create:*),Bash(gh pr view:*)"

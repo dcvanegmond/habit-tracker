@@ -1,0 +1,86 @@
+# Step 5: every merge to main is tested, built and copied to the VPS over SSH.
+#
+# Repository secrets:
+#   STAGING_SSH_KEY       private key of a dedicated deploy key (not your personal key)
+#   STAGING_KNOWN_HOSTS   output of `ssh-keyscan -p <port> <host>`
+# Repository variables:
+#   STAGING_HOST          e.g. staging.example.com
+#   STAGING_USER          e.g. deploy
+#   STAGING_PATH          e.g. /var/www/habit-tracker-staging
+#   STAGING_PORT          optional, defaults to 22
+#   STAGING_URL           optional, shown in the run and on the merged PR
+name: Deploy to staging
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-staging
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment:
+      name: staging
+      url: ${{ vars.STAGING_URL }}
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+      - run: npm test
+      - run: npm run build
+
+      - name: Set up SSH
+        env:
+          SSH_KEY: ${{ secrets.STAGING_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.STAGING_KNOWN_HOSTS }}
+        run: |
+          if [ -z "$SSH_KEY" ] || [ -z "$KNOWN_HOSTS" ]; then
+            echo "::error::STAGING_SSH_KEY and STAGING_KNOWN_HOSTS secrets must be set"
+            exit 1
+          fi
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+
+      - name: Upload build
+        env:
+          HOST: ${{ vars.STAGING_HOST }}
+          DEPLOY_USER: ${{ vars.STAGING_USER }}
+          TARGET: ${{ vars.STAGING_PATH }}
+          PORT: ${{ vars.STAGING_PORT || '22' }}
+        run: |
+          if [ -z "$HOST" ] || [ -z "$DEPLOY_USER" ] || [ -z "$TARGET" ]; then
+            echo "::error::STAGING_HOST, STAGING_USER and STAGING_PATH variables must be set"
+            exit 1
+          fi
+          rsync -az --delete \
+            -e "ssh -i ~/.ssh/deploy_key -p $PORT -o StrictHostKeyChecking=yes" \
+            dist/ "$DEPLOY_USER@$HOST:$TARGET/"
+
+      - name: Comment on the merged pull request
+        if: github.event_name == 'push'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          STAGING_URL: ${{ vars.STAGING_URL }}
+        run: |
+          pr=$(gh api "repos/${{ github.repository }}/commits/${{ github.sha }}/pulls" --jq '.[0].number // empty')
+          if [ -n "$pr" ]; then
+            gh pr comment "$pr" --repo "${{ github.repository }}" \
+              --body "🚀 Deployed to staging${STAGING_URL:+: $STAGING_URL} (commit ${GITHUB_SHA::7})"
+          fi

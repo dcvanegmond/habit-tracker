@@ -1,0 +1,57 @@
+# Step 1: add the `refine` label to an issue.
+# Claude turns it into a clear ticket (goal, acceptance criteria, plan) and
+# labels it `awaiting-approval`, or asks questions and labels it `needs-info`.
+name: Claude – refine ticket
+
+on:
+  issues:
+    types: [labeled]
+
+concurrency:
+  group: claude-issue-${{ github.event.issue.number }}
+  cancel-in-progress: false
+
+jobs:
+  refine:
+    if: github.event.label.name == 'refine'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      issues: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          prompt: |
+            REPO: ${{ github.repository }}
+            ISSUE: #${{ github.event.issue.number }}
+
+            You are refining a ticket so it is ready to implement. Do NOT change any code
+            and do NOT create branches or pull requests.
+
+            1. Read the ticket: `gh issue view ${{ github.event.issue.number }} --comments`.
+            2. Explore the codebase to see what is involved. Follow CLAUDE.md.
+            3. If the ticket is too unclear to plan, post a comment with at most 5 concrete
+               questions, then run
+               `gh issue edit ${{ github.event.issue.number }} --remove-label refine --add-label needs-info`
+               and stop.
+            4. Otherwise write a new issue body to /tmp/body.md with exactly these sections:
+               ## Goal (1-3 sentences)
+               ## Acceptance criteria (a checkbox list; each item must be testable)
+               ## Technical plan (files to change and the approach)
+               ## Test plan (which tests to add or change)
+               ## Out of scope
+               ## Original request (the original issue text, unchanged)
+               Keep the scope small. If the request is big, propose splitting it under Out of scope.
+            5. Apply it: `gh issue edit ${{ github.event.issue.number }} --body-file /tmp/body.md`.
+            6. Post a short comment summarising the plan and any assumptions you made.
+            7. Run `gh issue edit ${{ github.event.issue.number }} --remove-label refine --add-label awaiting-approval`.
+          claude_args: |
+            --max-turns 25
+            --allowedTools "Read,Glob,Grep,Write,Bash(gh issue view:*),Bash(gh issue edit:*),Bash(gh issue comment:*)"
