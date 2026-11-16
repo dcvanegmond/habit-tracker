@@ -41,6 +41,11 @@ export function toggleCompletion(habit, key) {
   return { ...habit, completions };
 }
 
+/** Returns a new array without the habit with the given id. */
+export function deleteHabit(habits, id) {
+  return habits.filter((h) => h.id !== id);
+}
+
 /**
  * Number of consecutive days the habit was done, ending today.
  * If today isn't done yet, the streak up to yesterday still counts.

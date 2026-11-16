@@ -1,6 +1,7 @@
 import {
   createHabit,
   currentStreak,
+  deleteHabit,
   isDoneOn,
   loadHabits,
   saveHabits,
@@ -43,11 +44,21 @@ export function mountApp(root, storage) {
           <input type="checkbox" ${done ? 'checked' : ''} />
           <span class="name"></span>
         </label>
-        <span class="streak">${streak} day${streak === 1 ? '' : 's'}</span>
+        <span class="meta">
+          <span class="streak">${streak} day${streak === 1 ? '' : 's'}</span>
+          <button type="button" class="delete">Delete</button>
+        </span>
       `;
       li.querySelector('.name').textContent = habit.name;
       li.querySelector('input').addEventListener('change', () => {
         update(habits.map((h) => (h.id === habit.id ? toggleCompletion(h, today) : h)));
+      });
+      const del = li.querySelector('.delete');
+      del.setAttribute('aria-label', `Delete ${habit.name}`);
+      del.addEventListener('click', () => {
+        if (window.confirm(`Delete "${habit.name}"? This cannot be undone.`)) {
+          update(deleteHabit(habits, habit.id));
+        }
       });
       list.appendChild(li);
     }
