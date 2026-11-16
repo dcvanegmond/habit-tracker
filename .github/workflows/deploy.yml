@@ -1,0 +1,142 @@
+# Shared deploy steps, used by deploy-staging.yml and deploy-production.yml.
+# Builds the app, uploads it to the VPS, builds an nginx:alpine image there and
+# runs it on the `webproxy` network behind nginx-proxy + acme-companion.
+#
+# Uses the repository variables STAGING_HOST, STAGING_USER and STAGING_PORT (optional)
+# for the VPS connection. Staging and production run on the same VPS.
+name: Deploy (shared)
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: GitHub environment name (staging or production)
+        required: true
+        type: string
+      container:
+        description: Docker container and image name on the VPS
+        required: true
+        type: string
+      domain:
+        description: Public domain, used for VIRTUAL_HOST and LETSENCRYPT_HOST
+        required: true
+        type: string
+      ref:
+        description: Git ref to deploy (empty = the ref that triggered the run)
+        required: false
+        type: string
+        default: ""
+      comment_on_pr:
+        description: Comment the URL on the pull request that produced this commit
+        required: false
+        type: boolean
+        default: false
+    secrets:
+      ssh_key:
+        required: true
+      known_hosts:
+        required: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    concurrency:
+      group: deploy-${{ inputs.environment }}
+      cancel-in-progress: false
+    environment:
+      name: ${{ inputs.environment }}
+      url: https://${{ inputs.domain }}
+    env:
+      CONTAINER: ${{ inputs.container }}
+      BUILD_DIR: ${{ inputs.container }}-build
+      DOMAIN: ${{ inputs.domain }}
+      HOST: ${{ vars.STAGING_HOST }}
+      DEPLOY_USER: ${{ vars.STAGING_USER }}
+      PORT: ${{ vars.STAGING_PORT || '22' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+      - run: npm test
+      - run: npm run build
+
+      - name: Check configuration
+        env:
+          SSH_KEY: ${{ secrets.ssh_key }}
+          KNOWN_HOSTS: ${{ secrets.known_hosts }}
+        run: |
+          missing=""
+          [ -n "$SSH_KEY" ]     || missing="$missing STAGING_SSH_KEY"
+          [ -n "$KNOWN_HOSTS" ] || missing="$missing STAGING_KNOWN_HOSTS"
+          [ -n "$HOST" ]        || missing="$missing STAGING_HOST"
+          [ -n "$DEPLOY_USER" ] || missing="$missing STAGING_USER"
+          [ -n "$DOMAIN" ]      || missing="$missing domain"
+          if [ -n "$missing" ]; then
+            echo "::error::Missing secrets/variables:$missing"
+            exit 1
+          fi
+
+      - name: Set up SSH
+        env:
+          SSH_KEY: ${{ secrets.ssh_key }}
+          KNOWN_HOSTS: ${{ secrets.known_hosts }}
+        run: |
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/deploy_key && chmod 600 ~/.ssh/deploy_key
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+
+      - name: Upload build context
+        run: |
+          SSH_OPTS="-i $HOME/.ssh/deploy_key -p $PORT -o StrictHostKeyChecking=yes"
+          ssh $SSH_OPTS "$DEPLOY_USER@$HOST" "mkdir -p ~/$BUILD_DIR"
+          rsync -az --delete --relative -e "ssh $SSH_OPTS" \
+            Dockerfile .dockerignore deploy/nginx.conf dist \
+            "$DEPLOY_USER@$HOST:$BUILD_DIR/"
+
+      - name: Build and restart container on the VPS
+        run: |
+          ssh -i ~/.ssh/deploy_key -p "$PORT" -o StrictHostKeyChecking=yes "$DEPLOY_USER@$HOST" \
+            bash -s -- "$CONTAINER" "$BUILD_DIR" "$DOMAIN" <<'REMOTE'
+          set -euo pipefail
+          NAME="$1"; DIR="$2"; DOMAIN="$3"
+          cd ~/"$DIR"
+          docker build -q -t "$NAME" .
+          docker rm -f "$NAME" >/dev/null 2>&1 || true
+          docker run -d --name "$NAME" \
+            --network webproxy --restart unless-stopped \
+            -e VIRTUAL_HOST="$DOMAIN" -e LETSENCRYPT_HOST="$DOMAIN" \
+            "$NAME"
+          docker image prune -f >/dev/null
+          REMOTE
+
+      - name: Smoke test
+        run: |
+          # -k: on the very first deploy the certificate may still be being issued.
+          for i in $(seq 1 18); do
+            code=$(curl -ks -o /dev/null -w '%{http_code}' "https://$DOMAIN/" || true)
+            echo "attempt $i: $code"
+            [ "$code" = "200" ] && exit 0
+            sleep 5
+          done
+          echo "::error::https://$DOMAIN/ did not return 200 within 90 seconds"
+          exit 1
+
+      - name: Comment on the merged pull request
+        if: inputs.comment_on_pr && github.event_name == 'push'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          pr=$(gh api "repos/${{ github.repository }}/commits/${{ github.sha }}/pulls" --jq '.[0].number // empty')
+          if [ -n "$pr" ]; then
+            gh pr comment "$pr" --repo "${{ github.repository }}" \
+              --body "🚀 Deployed to ${{ inputs.environment }}: https://$DOMAIN (commit ${GITHUB_SHA::7})"
+          fi

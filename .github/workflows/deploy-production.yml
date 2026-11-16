@@ -1,0 +1,28 @@
+# Production is deployed by publishing a GitHub Release (e.g. tag v0.2.0).
+# To roll back, run this workflow manually with an older tag.
+# The steps live in deploy.yml.
+name: Deploy to production
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Tag to deploy, e.g. v0.1.0 (for a rollback)
+        required: true
+        type: string
+
+jobs:
+  production:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/deploy.yml
+    with:
+      environment: production
+      container: habit-tracker
+      domain: ${{ vars.PRODUCTION_DOMAIN || 'habit-tracker.dcvanegmond.nl' }}
+      ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+    secrets:
+      ssh_key: ${{ secrets.STAGING_SSH_KEY }}
+      known_hosts: ${{ secrets.STAGING_KNOWN_HOSTS }}
