@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   createHabit,
   currentStreak,
+  deleteHabit,
   isDoneOn,
   loadHabits,
   previousDayKey,
@@ -81,5 +82,26 @@ describe('storage', () => {
     expect(loadHabits(storage)).toEqual([]);
     storage.setItem('habit-tracker:v1', '{not json');
     expect(loadHabits(storage)).toEqual([]);
+  });
+});
+
+describe('deleteHabit', () => {
+  const a = { id: 'a', name: 'A', completions: [] };
+  const b = { id: 'b', name: 'B', completions: ['2024-01-01'] };
+  const c = { id: 'c', name: 'C', completions: [] };
+
+  it('removes the matching habit and keeps the others in order', () => {
+    expect(deleteHabit([a, b, c], 'b')).toEqual([a, c]);
+  });
+
+  it('does not mutate its input', () => {
+    const input = [a, b];
+    const result = deleteHabit(input, 'a');
+    expect(input).toEqual([a, b]);
+    expect(result).not.toBe(input);
+  });
+
+  it('returns an equal array for an unknown id', () => {
+    expect(deleteHabit([a, b], 'zzz')).toEqual([a, b]);
   });
 });
