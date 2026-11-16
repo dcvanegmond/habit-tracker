@@ -18,34 +18,36 @@ If Claude asked questions (`needs-info`), answer them in a comment and add `refi
 
 ## One-time setup
 
-### 1. On your VPS
+### 1. Staging on the VPS
 
-Create a deploy user and folder, and serve the folder with your web server:
+Staging runs like the other sites on the VPS: an `nginx:alpine` container named
+`habit-tracker-staging` on the `webproxy` network, behind nginx-proxy and acme-companion,
+at https://habit-tracker-staging.dcvanegmond.nl (covered by the `*.dcvanegmond.nl` wildcard).
 
-```bash
-sudo adduser --disabled-password deploy
-sudo mkdir -p /var/www/habit-tracker-staging
-sudo chown deploy:deploy /var/www/habit-tracker-staging
-```
+On every merge to `main`, GitHub Actions tests and builds the app, rsyncs `Dockerfile`,
+`deploy/nginx.conf` and `dist/` to `~/habit-tracker-staging-build/` on the host, runs
+`docker build` there and restarts the container with `VIRTUAL_HOST`/`LETSENCRYPT_HOST`
+set. There's no registry. Nothing needs to be installed on the server first.
 
-Example nginx site:
+### 2. A dedicated deploy key
 
-```nginx
-server {
-    listen 80;
-    server_name staging.example.com;
-    root /var/www/habit-tracker-staging;
-    index index.html;
-}
-```
-
-### 2. On your Mac: a dedicated deploy key
-
-Use a separate key just for deploys, never your personal SSH key:
+GitHub Actions logs in with its own key, never your personal one:
 
 ```bash
 ssh-keygen -t ed25519 -f ~/.ssh/habit-tracker-deploy -N "" -C "github-actions habit-tracker"
-ssh-copy-id -i ~/.ssh/habit-tracker-deploy.pub deploy@staging.example.com
+cat ~/.ssh/habit-tracker-deploy.pub | ssh cloud 'cat >> ~/.ssh/authorized_keys'
+ssh -i ~/.ssh/habit-tracker-deploy dvanegmond@149.210.201.94 docker ps --format '{{.Names}}' | head -3
+```
+
+Then add the secrets and variables (or run the setup script below):
+
+```bash
+R=dcvanegmond/habit-tracker
+gh secret set STAGING_SSH_KEY -R $R < ~/.ssh/habit-tracker-deploy
+ssh-keyscan 149.210.201.94 2>/dev/null | gh secret set STAGING_KNOWN_HOSTS -R $R
+gh variable set STAGING_HOST   -R $R --body 149.210.201.94
+gh variable set STAGING_USER   -R $R --body dvanegmond
+gh variable set STAGING_DOMAIN -R $R --body habit-tracker-staging.dcvanegmond.nl
 ```
 
 ### 3. Configure the repo
@@ -84,9 +86,11 @@ npm run build
   once they're on `main`.
 - **CI or review doesn't run on Claude's PR:** the Claude GitHub App probably isn't
   installed on the repo, so the workflows fell back to `GITHUB_TOKEN`.
-- **Deploy fails on SSH:** check the four `STAGING_*` variables and two secrets under
-  Settings → Secrets and variables → Actions, and that the deploy key is in
-  `~deploy/.ssh/authorized_keys` on the server.
+- **Deploy fails on SSH:** check the `STAGING_*` secrets and variables under
+  Settings → Secrets and variables → Actions, and that the deploy key's public half is in
+  `~/.ssh/authorized_keys` of `dvanegmond` on the VPS.
+- **Smoke test gets 503:** the container isn't on `webproxy`, or nginx-proxy is still
+  reloading. Check with `ssh cloud docker logs habit-tracker-staging --tail 20`.
 - **Claude runs out of turns:** raise `--max-turns` in the workflow, or split the ticket.
 
 ## Starter tickets
