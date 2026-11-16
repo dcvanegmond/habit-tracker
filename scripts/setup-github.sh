@@ -37,25 +37,26 @@ echo "==> 4/6 Claude token"
 echo "    Run 'claude setup-token' in another terminal, then paste the token here."
 gh secret set CLAUDE_CODE_OAUTH_TOKEN
 
-echo "==> 5/6 Staging server (press Enter to skip any of these for now)"
-read -r -p "    Server host (e.g. staging.example.com): " HOST
-if [ -n "$HOST" ]; then
-  read -r -p "    SSH user for deploys (e.g. deploy): " DUSER
-  read -r -p "    SSH port [22]: " PORT; PORT=${PORT:-22}
-  read -r -p "    Folder on the server (e.g. /var/www/habit-tracker-staging): " TARGET
-  read -r -p "    Public staging URL (optional): " URL
-  read -r -p "    Path to the deploy PRIVATE key [~/.ssh/habit-tracker-deploy]: " KEY
-  KEY=${KEY:-~/.ssh/habit-tracker-deploy}; KEY=${KEY/#\~/$HOME}
-
-  gh variable set STAGING_HOST --body "$HOST"
-  gh variable set STAGING_USER --body "$DUSER"
-  gh variable set STAGING_PORT --body "$PORT"
-  gh variable set STAGING_PATH --body "$TARGET"
-  [ -n "$URL" ] && gh variable set STAGING_URL --body "$URL"
-  gh secret set STAGING_SSH_KEY < "$KEY"
-  ssh-keyscan -p "$PORT" "$HOST" 2>/dev/null | gh secret set STAGING_KNOWN_HOSTS
-  echo "    Staging configured."
+echo "==> 5/6 Staging on the VPS (press Enter to accept the defaults)"
+read -r -p "    Server host [149.210.201.94]: " HOST; HOST=${HOST:-149.210.201.94}
+read -r -p "    SSH user [dvanegmond]: " DUSER; DUSER=${DUSER:-dvanegmond}
+read -r -p "    SSH port [22]: " PORT; PORT=${PORT:-22}
+read -r -p "    Staging domain [habit-tracker-staging.dcvanegmond.nl]: " DOMAIN
+DOMAIN=${DOMAIN:-habit-tracker-staging.dcvanegmond.nl}
+read -r -p "    Deploy PRIVATE key [~/.ssh/habit-tracker-deploy]: " KEY
+KEY=${KEY:-~/.ssh/habit-tracker-deploy}; KEY=${KEY/#\~/$HOME}
+if [ ! -f "$KEY" ]; then
+  ssh-keygen -t ed25519 -f "$KEY" -N "" -C "github-actions $REPO_NAME"
+  echo "    Created $KEY. Adding it to $DUSER@$HOST (you may be asked for your normal SSH login)..."
+  ssh -p "$PORT" "$DUSER@$HOST" 'cat >> ~/.ssh/authorized_keys' < "$KEY.pub"
 fi
+gh variable set STAGING_HOST --body "$HOST"
+gh variable set STAGING_USER --body "$DUSER"
+gh variable set STAGING_PORT --body "$PORT"
+gh variable set STAGING_DOMAIN --body "$DOMAIN"
+gh secret set STAGING_SSH_KEY < "$KEY"
+ssh-keyscan -p "$PORT" "$HOST" 2>/dev/null | gh secret set STAGING_KNOWN_HOSTS
+echo "    Staging configured."
 gh api -X PUT "repos/$REPO/environments/staging" >/dev/null && echo "    'staging' environment created"
 
 echo "==> 6/6 Protect main (needs GitHub Pro/Team for private repos)"

@@ -1,14 +1,15 @@
-# Step 5: every merge to main is tested, built and copied to the VPS over SSH.
+# Every merge to main is tested, built and deployed as a Docker container on the VPS,
+# the same way as the other sites there: nginx:alpine behind nginx-proxy + acme-companion
+# on the `webproxy` network. No registry: the image is built on the host.
 #
 # Repository secrets:
-#   STAGING_SSH_KEY       private key of a dedicated deploy key (not your personal key)
-#   STAGING_KNOWN_HOSTS   output of `ssh-keyscan -p <port> <host>`
+#   STAGING_SSH_KEY       private key of a dedicated deploy key
+#   STAGING_KNOWN_HOSTS   output of `ssh-keyscan <host>`
 # Repository variables:
-#   STAGING_HOST          e.g. staging.example.com
-#   STAGING_USER          e.g. deploy
-#   STAGING_PATH          e.g. /var/www/habit-tracker-staging
+#   STAGING_HOST          e.g. 149.210.201.94
+#   STAGING_USER          e.g. dvanegmond (must be allowed to run docker)
+#   STAGING_DOMAIN        e.g. habit-tracker-staging.dcvanegmond.nl
 #   STAGING_PORT          optional, defaults to 22
-#   STAGING_URL           optional, shown in the run and on the merged PR
 name: Deploy to staging
 
 on:
@@ -20,13 +21,17 @@ concurrency:
   group: deploy-staging
   cancel-in-progress: false
 
+env:
+  CONTAINER: habit-tracker-staging
+  BUILD_DIR: habit-tracker-staging-build
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     environment:
       name: staging
-      url: ${{ vars.STAGING_URL }}
+      url: https://${{ vars.STAGING_DOMAIN }}
     permissions:
       contents: read
       pull-requests: write
@@ -42,45 +47,90 @@ jobs:
       - run: npm test
       - run: npm run build
 
+      - name: Check configuration
+        env:
+          SSH_KEY: ${{ secrets.STAGING_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.STAGING_KNOWN_HOSTS }}
+          HOST: ${{ vars.STAGING_HOST }}
+          DEPLOY_USER: ${{ vars.STAGING_USER }}
+          DOMAIN: ${{ vars.STAGING_DOMAIN }}
+        run: |
+          missing=""
+          [ -n "$SSH_KEY" ]     || missing="$missing STAGING_SSH_KEY"
+          [ -n "$KNOWN_HOSTS" ] || missing="$missing STAGING_KNOWN_HOSTS"
+          [ -n "$HOST" ]        || missing="$missing STAGING_HOST"
+          [ -n "$DEPLOY_USER" ] || missing="$missing STAGING_USER"
+          [ -n "$DOMAIN" ]      || missing="$missing STAGING_DOMAIN"
+          if [ -n "$missing" ]; then
+            echo "::error::Missing secrets/variables:$missing"
+            exit 1
+          fi
+
       - name: Set up SSH
         env:
           SSH_KEY: ${{ secrets.STAGING_SSH_KEY }}
           KNOWN_HOSTS: ${{ secrets.STAGING_KNOWN_HOSTS }}
         run: |
-          if [ -z "$SSH_KEY" ] || [ -z "$KNOWN_HOSTS" ]; then
-            echo "::error::STAGING_SSH_KEY and STAGING_KNOWN_HOSTS secrets must be set"
-            exit 1
-          fi
-          mkdir -p ~/.ssh
-          chmod 700 ~/.ssh
-          printf '%s\n' "$SSH_KEY" > ~/.ssh/deploy_key
-          chmod 600 ~/.ssh/deploy_key
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/deploy_key && chmod 600 ~/.ssh/deploy_key
           printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
 
-      - name: Upload build
+      - name: Upload build context
         env:
           HOST: ${{ vars.STAGING_HOST }}
           DEPLOY_USER: ${{ vars.STAGING_USER }}
-          TARGET: ${{ vars.STAGING_PATH }}
           PORT: ${{ vars.STAGING_PORT || '22' }}
         run: |
-          if [ -z "$HOST" ] || [ -z "$DEPLOY_USER" ] || [ -z "$TARGET" ]; then
-            echo "::error::STAGING_HOST, STAGING_USER and STAGING_PATH variables must be set"
-            exit 1
-          fi
-          rsync -az --delete \
-            -e "ssh -i ~/.ssh/deploy_key -p $PORT -o StrictHostKeyChecking=yes" \
-            dist/ "$DEPLOY_USER@$HOST:$TARGET/"
+          SSH_OPTS="-i $HOME/.ssh/deploy_key -p $PORT -o StrictHostKeyChecking=yes"
+          ssh $SSH_OPTS "$DEPLOY_USER@$HOST" "mkdir -p ~/$BUILD_DIR"
+          rsync -az --delete --relative -e "ssh $SSH_OPTS" \
+            Dockerfile .dockerignore deploy/nginx.conf dist \
+            "$DEPLOY_USER@$HOST:$BUILD_DIR/"
+
+      - name: Build and restart container on the VPS
+        env:
+          HOST: ${{ vars.STAGING_HOST }}
+          DEPLOY_USER: ${{ vars.STAGING_USER }}
+          PORT: ${{ vars.STAGING_PORT || '22' }}
+          DOMAIN: ${{ vars.STAGING_DOMAIN }}
+        run: |
+          ssh -i ~/.ssh/deploy_key -p "$PORT" -o StrictHostKeyChecking=yes "$DEPLOY_USER@$HOST" \
+            bash -s -- "$CONTAINER" "$BUILD_DIR" "$DOMAIN" <<'REMOTE'
+          set -euo pipefail
+          NAME="$1"; DIR="$2"; DOMAIN="$3"
+          cd ~/"$DIR"
+          docker build -q -t "$NAME" .
+          docker rm -f "$NAME" >/dev/null 2>&1 || true
+          docker run -d --name "$NAME" \
+            --network webproxy --restart unless-stopped \
+            -e VIRTUAL_HOST="$DOMAIN" -e LETSENCRYPT_HOST="$DOMAIN" \
+            "$NAME"
+          docker image prune -f >/dev/null
+          REMOTE
+
+      - name: Smoke test
+        env:
+          DOMAIN: ${{ vars.STAGING_DOMAIN }}
+        run: |
+          # -k: on the very first deploy the certificate may still be being issued.
+          for i in $(seq 1 18); do
+            code=$(curl -ks -o /dev/null -w '%{http_code}' "https://$DOMAIN/" || true)
+            echo "attempt $i: $code"
+            [ "$code" = "200" ] && exit 0
+            sleep 5
+          done
+          echo "::error::https://$DOMAIN/ did not return 200 within 90 seconds"
+          exit 1
 
       - name: Comment on the merged pull request
         if: github.event_name == 'push'
         continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
-          STAGING_URL: ${{ vars.STAGING_URL }}
+          DOMAIN: ${{ vars.STAGING_DOMAIN }}
         run: |
           pr=$(gh api "repos/${{ github.repository }}/commits/${{ github.sha }}/pulls" --jq '.[0].number // empty')
           if [ -n "$pr" ]; then
             gh pr comment "$pr" --repo "${{ github.repository }}" \
-              --body "🚀 Deployed to staging${STAGING_URL:+: $STAGING_URL} (commit ${GITHUB_SHA::7})"
+              --body "🚀 Deployed to staging: https://$DOMAIN (commit ${GITHUB_SHA::7})"
           fi
